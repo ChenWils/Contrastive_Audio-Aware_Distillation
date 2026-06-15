@@ -1,0 +1,26 @@
+placeholder_token: "<|reserved_special_token_87|>"
+audio_locator: "<|AUDIO|>"
+
+train_ds: 
+  data_root: "/NeMo/data/audios/project_kira"
+  manifest_filepaths: ["/root/DeSTA3-dev/data/241226_respond2@0811_seed_transcript.1.jsonl"]
+  batch_sampler: length_based
+  max_seq_length: 300
+  batch_size: 8
+  shuffle: True
+  pin_memory: True
+  num_workers: 0
+  drop_last: True
+  return_seed: True
+
+validation_ds:
+  batch_sampler: null
+  data_root: "/NeMo/data/audios/project_kira"
+  manifest_filepaths: ["/root/project_kira/data/debug.jsonl"]
+  max_seq_length: 512
+  batch_size: 4
+  shuffle: False
+  pin_memory: True
+  num_workers: 0
+  drop_last: True
+  return_seed: False

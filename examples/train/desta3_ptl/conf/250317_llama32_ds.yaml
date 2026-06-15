@@ -1,0 +1,95 @@
+hydra:
+  run:
+    dir: ${exp_dir}
+
+
+project: pytorch_lightning
+name: reproduce_desta2
+exp_dir: ???
+
+resume_from_checkpoint: null
+init_from_pretrained_weights: null
+
+ptl_module: default
+
+wandb:
+  project: test
+  log_model: all
+
+trainer:
+  devices: 8 # 0 for CPU, or list of the GPUs to use e.g. [0, 1] or [0]
+  num_nodes: 1
+  max_epochs: 10
+  max_steps: -1 # precedence over max_epochs
+  accumulate_grad_batches: 1 # accumulates grads every k batches
+  gradient_clip_val: 1.0
+  precision: "bf16-mixed" #16 # should be set to 16 for O1 and O2 to enable the AMP.
+  accelerator: gpu
+  log_every_n_steps: 10  # interval of logging.
+  val_check_interval: 1.0  # set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
+  enable_checkpointing: True
+  # strategy: ddp_find_unused_parameters_true
+  # strategy: ddp
+
+
+model:
+  llm:
+    model_id: kehanlu/llama-3.2-8B-Instruct
+    freeze: True
+
+  encoder:
+    model_id: openai/whisper-medium
+    freeze: True
+
+  connector:
+    mode: qformer_1
+    prompt_size: 64
+    num_hidden_layers: 6
+
+  generation_kwargs:
+    max_new_tokens: 80
+    do_sample: False
+    temperature: 1
+    top_p: 1
+
+optim:
+  lr: 1e-4
+  betas: [0.9, 0.98]
+  weight_decay: 0.01
+
+  sched:
+    warmup_steps: 2000
+
+dataset:
+  placeholder_token: "<|reserved_special_token_87|>"
+  audio_locator: "<|AUDIO|>"
+
+  train_ds: 
+    data_root: "/home/jovyan/workspace/data/audios"
+      #manifest_filepaths: ["https://huggingface.co/datasets/Morioh/shelf/resolve/manifest/manifest3/250317_llama32_ds.debug.jsonl"]
+    manifest_filepaths: ["https://huggingface.co/datasets/Morioh/shelf/resolve/manifest/manifest3/250326_llama32_ds_syn5.jsonl"]
+    batch_sampler: null
+      #max_batch_length: 9216
+    max_seq_length: 300
+    batch_size: 16
+    shuffle: True
+    pin_memory: True
+    num_workers: 4
+    drop_last: True
+    return_seed: False
+    answer_shift: 1
+
+  validation_ds:
+    batch_sampler: null
+      #data_root: "/home/jovyan/shared/kehanluu/data"
+      #manifest_filepaths: ["https://huggingface.co/datasets/kehanlu/df93f08c-c28d-4db9-ad5c-44c6f3d21360/resolve/audios/manifest3/240720_dynamic-superb-eval.jsonl"]
+    data_root: "/home/jovyan/workspace/data/audios"
+    manifest_filepaths: ["https://huggingface.co/datasets/Morioh/shelf/resolve/manifest/eval_manifest/dynamic-superb-test.val.jsonl"]
+    max_seq_length: 512
+    batch_size: 4
+    shuffle: False
+    pin_memory: True
+    num_workers: 4
+    drop_last: True
+    return_seed: False

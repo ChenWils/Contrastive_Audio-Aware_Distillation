@@ -1,0 +1,298 @@
+hydra:
+  run:
+    dir: ${exp_dir}
+
+
+project: pytorch_lightning
+name: RB_contrastive_distill_desta2_llama32_3B
+exp_dir: ???
+
+resume_from_checkpoint: null
+init_from_pretrained_weights: null
+
+ptl_module: wilz_contrastive_distill
+
+wandb:
+  project: test
+  log_model: all
+
+trainer:
+  devices: [0] # 0 for CPU, or list of the GPUs to use e.g. [0, 1] or [0]
+  num_nodes: 1
+  max_epochs: 10
+  max_steps: -1 # precedence over max_epochs
+  accumulate_grad_batches: 1 # accumulates grads every k batches
+  gradient_clip_val: 1.0
+  precision: "bf16-mixed" #16 # should be set to 16 for O1 and O2 to enable the AMP.
+  accelerator: gpu
+  log_every_n_steps: 10  # interval of logging.
+  val_check_interval: 1.0  # set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
+  enable_checkpointing: True
+  # strategy: ddp_find_unused_parameters_true
+  # strategy: ddp
+
+model:
+  add_noise: False
+  # Knowledge Distillation parameters
+  kd_alpha: 0.7                      # Weight for KD loss vs NTP loss (0-1)
+  kd_temperature: 2.0                # Temperature for KL divergence (used for use_standard_kd and use_logit_contrastive)
+  contrastive_beta: 2.0              # β for LOGIT contrastive: (1+β)*with_audio - β*without_audio
+  repr_contrastive_beta: 0.0         # β for REPRESENTATION contrastive (if not set, uses contrastive_beta)
+                                      # Set to 0 for NON-contrastive mode (uses teacher with audio only)
+
+  # Loss component flags (at least one must be true)
+  # Recommended: use_logit_contrastive=true + use_repr_contrastive=true (pure contrastive)
+  use_standard_kd: false            # Standard KL divergence (with-audio teacher only, no contrastive)
+  use_logit_contrastive: true        # Logit-level contrastive loss (KL divergence on contrastive logits)
+  use_repr_contrastive: false        # Representation-level contrastive loss (MSE on contrastive hidden states)
+
+  repr_contrastive_loss_type: "mse" #"cross_attention"  # or "mse"
+  cross_attn_loss_scale: 10.0
+
+  # Multi-layer distillation (for repr_contrastive with MSE or cross_attention mode!)
+  # NOTE: Logit contrastive and standard KD always use final layer only
+  # MSE and cross_attention both use LAYER-SPECIFIC projections for each layer pair!
+  distill_layer_mode: "average"              # Options: "last" or "average"
+
+  # AUTO-SAMPLING (like CoD): Sample every Nth layer automatically
+  distill_student_step: 7                    # Sample every 7th student layer (default: 7)
+  distill_teacher_step: 8                    # Sample every 8th teacher layer (default: 8)
+  # Example: With 3B (28 layers) and 8B (32 layers):
+  #   Student samples: [0, 7, 14, 21, 28] → layers 0, 7, 14, 21, 28
+  #   Teacher samples: [0, 8, 16, 24, 32] → layers 0, 8, 16, 24, 32
+  entropy_calculation: true        # Training entropy (teacher logits, first epoch only)
+  enable_eval_entropy: true        # Evaluation entropy (student logits on ground truth)
+
+  target_mode: response
+
+  llm:
+    model_id: /home/chenwils/llama3.2_3B_Instruct
+    freeze: True
+
+  encoder:
+    model_id: openai/whisper-medium
+    freeze: True
+
+  connector:
+    mode: qformer_1
+    prompt_size: 64
+    num_hidden_layers: 2
+
+  generation_kwargs:
+    max_new_tokens: 80
+    do_sample: False
+    temperature: 1
+    top_p: 1
+
+teacher_model:
+  llm:
+    model_id: /home/chenwils/llama3.2_8B_from_11B
+    freeze: True
+
+  encoder:
+    model_id: openai/whisper-medium
+    freeze: True
+
+  connector:
+    mode: qformer_1
+    prompt_size: 64
+    num_hidden_layers: 2
+
+  generation_kwargs:
+    max_new_tokens: 80
+    do_sample: False
+    temperature: 1
+    top_p: 1
+  ckpt_path: /home/chenwils/DeSTA3-dev-main/data/teacher_ckpt/llama_31_8B/250306-13@rdesta2/pytorch_lightning/3b88q8kb/checkpoints/epoch=10-step=77560.ckpt
+
+
+optim:
+  lr: 1e-4
+  betas: [0.9, 0.98]
+  weight_decay: 0.01
+
+  sched:
+    warmup_steps: 2000
+
+dataset:
+  placeholder_token: "<|reserved_special_token_87|>"
+  audio_locator: "<|AUDIO|>"
+
+  train_ds:
+    data_root: "/home/chenwils/DeSTA3-dev-main/data/desta2/desta2_audios"
+      #manifest_filepaths: ["https://huggingface.co/datasets/Morioh/shelf/resolve/manifest/manifest3/250317_llama32_ds.debug.jsonl"]
+    # manifest_filepaths: ["https://huggingface.co/datasets/Morioh/shelf/resolve/manifest/manifest3/250326_llama32_ds_syn5.jsonl"]
+    # manifest_filepaths: ["/home/chenwils/DeSTA3-dev-main/data/desta2/241226_respond2%400811_seed_transcript.1.jsonl"]
+    # manifest_filepaths: ["/home/chenwils/DeSTA3-dev-main/DeSTA_offline_label/AUDIO_OUTPUTS/training_ready_20260202_155628.jsonl"]
+    # manifest_filepaths: ["/home/chenwils/DeSTA3-dev-main/data/desta2/OP_Qwen260127_respond2@0811_processed.jsonl"]
+    manifest_filepaths: ["/home/chenwils/DeSTA3-dev-main/data/desta2/AUDIO_OP_Qwen260127_respond2@0811_processed.jsonl"]
+    batch_sampler: null
+      #max_batch_length: 9216
+    max_seq_length: 300
+    batch_size: 8
+    shuffle: True
+    pin_memory: True
+    num_workers: 4
+    drop_last: True
+    return_seed: True
+    answer_shift: 1
+
+  validation_ds:
+    batch_sampler: null
+      #data_root: "/home/jovyan/shared/kehanluu/data"
+      #manifest_filepaths: ["https://huggingface.co/datasets/kehanlu/df93f08c-c28d-4db9-ad5c-44c6f3d21360/resolve/audios/manifest3/240720_dynamic-superb-eval.jsonl"]
+    data_root: "/home/chenwils/DeSTA3-dev-main/data/eval"
+    manifest_filepaths: ["https://huggingface.co/datasets/Morioh/shelf/resolve/manifest/eval_manifest/dynamic-superb-test.val.jsonl"]
+    max_seq_length: 512
+    batch_size: 4
+    shuffle: False
+    pin_memory: True
+    num_workers: 4
+    drop_last: True
+    return_seed: False
+    persistent_workers: false
+
+# ============================================================================
+# Configuration Notes:
+# ============================================================================
+#
+# This config uses HYBRID distillation:
+#   - use_standard_kd: true           (KL divergence on with-audio only)
+#   - use_logit_contrastive: false    (KL divergence on contrastive logits - UPDATED!)
+#   - use_repr_contrastive: true      (MSE or cross-attention on contrastive representations)
+#   - repr_contrastive_loss_type: "cross_attention"
+#
+# The teacher model performs TWO forward passes:
+#   1. WITH audio (positive pair) - full multimodal input
+#   2. WITHOUT audio (negative pair) - text-only embeddings
+#
+# Contrastive formula: (1 + contrastive_beta) * with_audio - contrastive_beta * without_audio
+#
+# IMPORTANT NOTES:
+# 1. kd_temperature (2.0) applies to BOTH use_standard_kd and use_logit_contrastive
+#    since logit contrastive loss uses KL divergence (not MSE)
+# 2. TWO SEPARATE BETA VALUES (NEW!):
+#    - contrastive_beta: Controls logit contrastive formula
+#    - repr_contrastive_beta: Controls representation contrastive formula
+#    - Setting repr_contrastive_beta=0 → NON-CONTRASTIVE mode (teacher with audio only)
+#    - This allows mixing contrastive and non-contrastive losses!
+# 3. LOSS WEIGHTING (matches CoD):
+#    - Logit losses (standard_kd OR logit_contrastive): 70% weight
+#    - Representation loss (repr_contrastive): 30% weight
+#    This follows the same 70-30 split as wilz_CoD_distill.py
+# 4. Multi-layer distillation (distill_layer_mode="average") works for:
+#    - repr_contrastive with MSE mode (NEW! Each layer pair has its own projection)
+#    - repr_contrastive with cross_attention mode (Each layer pair has its own projection)
+#    Does NOT work for: standard_kd, logit_contrastive (always use final layer only)
+#
+# ============================================================================
+# Multi-Layer Distillation (NEW!)
+# ============================================================================
+#
+# Mode 1: "last" (default - original behavior)
+#   distill_layer_mode: "last"
+#   → Only distills the final layer representation
+#   → Fastest, lowest memory, good baseline
+#
+# Mode 2: "average" (multi-layer distillation with AUTO-SAMPLING like CoD)
+#   distill_layer_mode: "average"
+#   distill_student_step: 7   # Sample every 7th student layer
+#   distill_teacher_step: 8   # Sample every 8th teacher layer
+#   → Automatically samples layers using step approach
+#   → Richer knowledge transfer from multiple layers
+#   → Computation scales with number of sampled layers
+#
+# AUTO-SAMPLING works like CoD:
+#   student_hs[::step_s]  # Every Nth student layer
+#   teacher_hs[::step_t]  # Every Nth teacher layer
+#
+# Example step configurations:
+#
+# 1. Default (RECOMMENDED, matches CoD):
+#    distill_student_step: 7   # Samples ~4 layers from 28-layer model
+#    distill_teacher_step: 8   # Samples ~4 layers from 32-layer model
+#
+# 2. Denser sampling:
+#    distill_student_step: 4   # Samples ~7 layers
+#    distill_teacher_step: 5   # Samples ~6 layers
+#
+# 3. Sparser sampling (faster):
+#    distill_student_step: 14  # Samples ~2 layers
+#    distill_teacher_step: 16  # Samples ~2 layers
+#
+# IMPORTANT: Multi-layer distillation behavior:
+#       - Logit contrastive (use_logit_contrastive): Always uses FINAL LOGITS only
+#       - Standard KD (use_standard_kd): Always uses FINAL LOGITS only
+#       - Repr contrastive with MSE: NOW SUPPORTS MULTI-LAYER! (NEW!)
+#       - Repr contrastive with cross_attention: Supports multi-layer
+#       Both MSE and cross_attention use LAYER-SPECIFIC projection layers!
+#
+# ============================================================================
+# Alternative Loss Configurations:
+# ============================================================================
+#
+# Alternative configurations to try:
+#
+# 0. Pure Contrastive (RECOMMENDED - logit KL + repr MSE/cross-attn):
+#    use_standard_kd: false
+#    use_logit_contrastive: true
+#    use_repr_contrastive: true
+#    kd_alpha: 0.5
+#    contrastive_beta: 0.5
+#    repr_contrastive_beta: 0.5
+#    kd_temperature: 2.0  # For logit contrastive KL divergence
+#
+# 0b. Logit Contrastive + Repr NON-Contrastive MSE (Like CoD's layer_level_loss):
+#    use_standard_kd: false
+#    use_logit_contrastive: true
+#    use_repr_contrastive: true
+#    repr_contrastive_loss_type: "mse"
+#    kd_alpha: 0.5
+#    contrastive_beta: 0.5         # Logit uses contrastive
+#    repr_contrastive_beta: 0.0    # Repr does NOT use contrastive (teacher with audio only)
+#    kd_temperature: 2.0
+#    distill_layer_mode: "average" # Multi-layer MSE with auto-sampling (like CoD!)
+#    distill_student_step: 7       # Every 7th student layer
+#    distill_teacher_step: 8       # Every 8th teacher layer
+#
+# 1. Standard KD + Representation Contrastive (Hybrid):
+#    use_standard_kd: true
+#    use_logit_contrastive: false
+#    use_repr_contrastive: true
+#    kd_alpha: 0.5
+#    contrastive_beta: 0.5
+#    kd_temperature: 2.0  # For standard KD only
+#
+# 2. Logit Contrastive Only (KL divergence on contrastive logits):
+#    use_standard_kd: false
+#    use_logit_contrastive: true
+#    use_repr_contrastive: false
+#    kd_alpha: 0.5
+#    contrastive_beta: 0.5
+#    kd_temperature: 2.0  # Required for KL divergence
+#
+# 3. Representation Contrastive Only:
+#    use_standard_kd: false
+#    use_logit_contrastive: false
+#    use_repr_contrastive: true
+#    kd_alpha: 0.5
+#    contrastive_beta: 0.5
+#
+# 4. All Three (experimental - combines standard KL + contrastive KL + contrastive MSE):
+#    use_standard_kd: true
+#    use_logit_contrastive: true
+#    use_repr_contrastive: true
+#    kd_alpha: 0.5
+#    contrastive_beta: 0.5
+#    kd_temperature: 2.0  # Applies to both standard_kd and logit_contrastive
+#
+# Hyperparameter tuning suggestions:
+#   - kd_alpha: Try [0.3, 0.5, 0.7] to balance NTP vs KD loss
+#   - contrastive_beta (logit): Try [0.3, 0.5, 0.7] to control logit contrastive weight
+#   - repr_contrastive_beta (repr): Try [0.0, 0.3, 0.5, 0.7] to control repr contrastive weight
+#     * 0.0 = NON-contrastive (like CoD's layer_level_loss)
+#     * >0 = contrastive mode
+#   - kd_temperature: Used for use_standard_kd and use_logit_contrastive (KL losses), try [1.0, 2.0, 4.0]
+#
+# ============================================================================

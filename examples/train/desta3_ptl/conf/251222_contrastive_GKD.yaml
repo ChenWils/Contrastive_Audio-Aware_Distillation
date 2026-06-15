@@ -1,0 +1,257 @@
+hydra:
+  run:
+    dir: ${exp_dir}
+
+
+project: pytorch_lightning
+name: GKD_Contrastive_desta3_llama32_3B
+exp_dir: ???
+
+resume_from_checkpoint: null
+init_from_pretrained_weights: null
+
+# Use the new GKD + Contrastive distillation module
+ptl_module: contrastive_GKD_distill
+
+wandb:
+  project: gkd_contrastive_distill
+  log_model: all
+
+trainer:
+  devices: [0] # 0 for CPU, or list of the GPUs to use e.g. [0, 1] or [0]
+  num_nodes: 1
+  max_epochs: 10
+  max_steps: -1 # precedence over max_epochs
+  accumulate_grad_batches: 1 # accumulates grads every k batches
+  gradient_clip_val: 1.0
+  precision: "bf16-mixed" #16 # should be set to 16 for O1 and O2 to enable the AMP.
+  accelerator: gpu
+  log_every_n_steps: 10  # interval of logging.
+  val_check_interval: 1.0  # set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
+  enable_checkpointing: True
+  # strategy: ddp_find_unused_parameters_true
+  # strategy: ddp
+
+model:
+  # ========== GKD Parameters ==========
+  # Lambda: Controls on-policy vs ground-truth mixing
+  # 1.0 = Pure on-policy (100% student-generated sequences)
+  # 0.5 = Mixed (50% student-generated, 50% ground-truth)
+  # 0.0 = Pure ground-truth (standard contrastive distillation)
+  gkd_lambda: 1.0
+
+  # Divergence type for GKD loss
+  # "reverse_kl": KL(student || teacher) - GKD default, mode-seeking behavior
+  # "forward_kl": KL(teacher || student) - Standard KD, mean-seeking
+  # "jsd": Jensen-Shannon Divergence - Symmetric, balanced
+  gkd_divergence: "reverse_kl"
+
+  # ========== Contrastive Parameters ==========
+  # Alpha: Weight for KD loss vs NTP loss
+  # 0.5 = 50% NTP loss, 50% GKD contrastive loss
+  kd_alpha: 0.7
+
+  # Beta: Weight for contrastive formula (1+β)*with_audio - β*without_audio
+  # Higher beta = stronger emphasis on audio-grounded responses
+  contrastive_beta: 0.5
+
+  # Temperature for divergence computation (KL, JSD)
+  kd_temperature: 2.0
+
+  # Student model configuration
+  llm:
+    model_id: /home/chenwils/llama3.2_3B_Instruct
+    freeze: False  # Set to False to train student
+
+  encoder:
+    model_id: openai/whisper-medium
+    freeze: True
+
+  connector:
+    mode: qformer_1
+    prompt_size: 64
+    num_hidden_layers: 2
+
+  # Generation config (used for both on-policy training generation and validation)
+  # For GKD, these control how the student generates during training
+  generation_kwargs:
+    max_new_tokens: 80       # Longer for on-policy exploration
+    do_sample: true           # Enable sampling for on-policy
+    temperature: 1.0          # Standard temperature
+    top_p: 0.95               # Nucleus sampling
+    top_k: 50                 # Top-k sampling
+
+# Teacher model configuration
+teacher_model:
+  llm:
+    model_id: /home/chenwils/llama3.2_8B_from_11B
+    freeze: True
+
+  encoder:
+    model_id: openai/whisper-medium
+    freeze: True
+
+  connector:
+    mode: qformer_1
+    prompt_size: 64
+    num_hidden_layers: 2
+
+  generation_kwargs:
+    max_new_tokens: 80
+    do_sample: False
+    temperature: 1
+    top_p: 1
+
+  # Path to teacher checkpoint
+  ckpt_path: /home/chenwils/DeSTA3-dev-main/data/teacher_ckpt/llama_31_8B/250306-13@rdesta2/pytorch_lightning/3b88q8kb/checkpoints/epoch=10-step=77560.ckpt
+
+
+optim:
+  lr: 1e-4
+  betas: [0.9, 0.98]
+  weight_decay: 0.01
+
+  sched:
+    warmup_steps: 2000
+
+dataset:
+  placeholder_token: "<|reserved_special_token_87|>"
+  audio_locator: "<|AUDIO|>"
+
+  train_ds:
+    data_root: "/home/chenwils/DeSTA3-dev-main/data/desta2/desta2_audios"
+    #manifest_filepaths: ["https://huggingface.co/datasets/Morioh/shelf/resolve/manifest/manifest3/250317_llama32_ds.debug.jsonl"]
+    # manifest_filepaths: ["https://huggingface.co/datasets/Morioh/shelf/resolve/manifest/manifest3/250326_llama32_ds_syn5.jsonl"]
+    manifest_filepaths: ["/home/chenwils/DeSTA3-dev-main/data/desta2/241226_respond2%400811_seed_transcript.1.jsonl"]
+    batch_sampler: null
+      #max_batch_length: 9216
+    max_seq_length: 300
+    batch_size: 8
+    shuffle: True
+    pin_memory: True
+    num_workers: 4
+    drop_last: True
+    return_seed: True
+    answer_shift: 1
+
+  validation_ds:
+    batch_sampler: null
+      #data_root: "/home/jovyan/shared/kehanluu/data"
+      #manifest_filepaths: ["https://huggingface.co/datasets/kehanlu/df93f08c-c28d-4db9-ad5c-44c6f3d21360/resolve/audios/manifest3/240720_dynamic-superb-eval.jsonl"]
+    data_root: "/home/chenwils/DeSTA3-dev-main/data/eval"
+    manifest_filepaths: ["https://huggingface.co/datasets/Morioh/shelf/resolve/manifest/eval_manifest/dynamic-superb-test.val.jsonl"]
+    max_seq_length: 512
+    batch_size: 4
+    shuffle: False
+    pin_memory: True
+    num_workers: 4
+    drop_last: True
+    return_seed: False
+
+
+# ============================================================================
+# Configuration Guide: GKD + Contrastive Distillation
+# ============================================================================
+#
+# This configuration enables GKD (Generalized Knowledge Distillation) with
+# contrastive learning on logits. The key innovation is that the student
+# generates its own sequences (on-policy), and the teacher provides contrastive
+# feedback (with/without audio) on those student-generated sequences.
+#
+# ============================================================================
+# Key Parameters to Tune:
+# ============================================================================
+#
+# 1. gkd_lambda (0.0 - 1.0):
+#    - Controls the balance between on-policy and ground-truth training
+#    - Start with 1.0 for pure GKD, or 0.5 for mixed approach
+#    - Lower values = more stable (closer to standard distillation)
+#    - Higher values = more on-policy learning (may be unstable initially)
+#
+# 2. gkd_divergence ("forward_kl" | "reverse_kl" | "jsd"):
+#    - reverse_kl: GKD default, mode-seeking (student focuses on teacher's peaks)
+#    - forward_kl: Standard KD, mean-seeking (student covers teacher's distribution)
+#    - jsd: Symmetric compromise between forward and reverse KL
+#    - Recommendation: Start with "reverse_kl"
+#
+# 3. contrastive_beta (0.0 - 1.0):
+#    - Controls strength of contrastive signal
+#    - 0.0 = No contrastive (just with-audio teacher)
+#    - 0.5 = Balanced (recommended starting point)
+#    - 1.0 = Strong audio emphasis
+#
+# 4. kd_alpha (0.0 - 1.0):
+#    - Controls balance between NTP loss and GKD loss
+#    - 0.0 = Pure NTP (no distillation)
+#    - 0.5 = Balanced (recommended)
+#    - 1.0 = Pure distillation (no NTP)
+#
+# 5. generation_kwargs.temperature (0.1 - 2.0):
+#    - Controls diversity of student-generated sequences (both training & validation)
+#    - 1.0 = Standard sampling (recommended starting point)
+#    - < 1.0 = More focused (less diverse)
+#    - > 1.0 = More diverse (may be noisy)
+#
+# 6. generation_kwargs.max_new_tokens:
+#    - For GKD on-policy: Higher values allow more exploration but slower training
+#    - Recommended: 128 for training, can reduce for faster iterations
+#
+# ============================================================================
+# Recommended Training Schedules:
+# ============================================================================
+#
+# Conservative (Stable):
+#   gkd_lambda: 0.5                               # 50% on-policy, 50% ground-truth
+#   gkd_divergence: "forward_kl"                  # Standard KD
+#   generation_kwargs.temperature: 0.8            # Slightly focused sampling
+#   contrastive_beta: 0.3                         # Moderate audio emphasis
+#   kd_alpha: 0.5                                 # Balanced NTP + KD
+#
+# Aggressive (Full GKD):
+#   gkd_lambda: 1.0                               # 100% on-policy
+#   gkd_divergence: "reverse_kl"                  # Mode-seeking
+#   generation_kwargs.temperature: 1.0            # Standard sampling
+#   contrastive_beta: 0.5                         # Strong audio emphasis
+#   kd_alpha: 0.7                                 # Emphasis on distillation
+#
+# Mixed (Recommended Starting Point):
+#   gkd_lambda: 0.8                               # 80% on-policy, 20% ground-truth
+#   gkd_divergence: "reverse_kl"                  # Mode-seeking
+#   generation_kwargs.temperature: 1.0            # Standard sampling
+#   contrastive_beta: 0.5                         # Balanced audio emphasis
+#   kd_alpha: 0.5                                 # Balanced NTP + KD
+#
+# ============================================================================
+# Curriculum Learning (Progressive Training):
+# ============================================================================
+#
+# You can progressively increase on-policy ratio:
+#
+# Phase 1 (Epochs 1-3): Warm-up with ground-truth
+#   gkd_lambda: 0.3                 # 30% on-policy
+#
+# Phase 2 (Epochs 4-6): Increase on-policy
+#   gkd_lambda: 0.6                 # 60% on-policy
+#
+# Phase 3 (Epochs 7-10): Full on-policy
+#   gkd_lambda: 1.0                 # 100% on-policy
+#
+# ============================================================================
+# Monitoring Metrics:
+# ============================================================================
+#
+# Key metrics to watch in WandB:
+# - train/ntp_loss: Next-token prediction loss (should decrease)
+# - train/gkd_contrastive_loss: GKD loss with contrastive (should decrease)
+# - train/loss_total: Combined loss (should decrease steadily)
+# - train/ppl: Perplexity (should decrease)
+# - val_loss: Validation loss (check for overfitting)
+#
+# Troubleshooting:
+# - If gkd_contrastive_loss explodes: Reduce gkd_lambda or temperature
+# - If training is too slow: Increase batch_size or reduce generation_max_new_tokens
+# - If student doesn't learn: Increase kd_alpha or contrastive_beta
+# - If student overfits to teacher: Reduce kd_alpha, increase NTP weight
+#
+# ============================================================================
